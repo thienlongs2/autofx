@@ -1,0 +1,161 @@
+#include <Python.mqh>
+
+input string python_script = "C:\\Users\\Sww\\Desktop\\code_project\\pythonProject\\fx_auto\\backtest.py";
+input double LotSize = 0.1;
+input double StopLoss = 10;
+input double TakeProfit = 15;
+input int MaxOrders = 1;
+
+// ========================== 🟢 GỌI PYTHON DỰ ĐOÁN GIÁ ==========================
+double PredictPrice() {
+    PythonInit();
+    double result = PythonCallFunction(python_script, "predict", "d");
+    PythonFinalize();
+
+    PrintFormat("🔍 Debug: Giá dự đoán từ Python: %.5f", result);
+
+    if (result == 0.0) {
+        Print("⚠️ [ERROR] Python không trả về kết quả dự đoán!");
+    }
+
+    return result;
+}
+
+// ========================== 🟢 ĐẾM SỐ LỆNH HIỆN TẠI ==========================
+int GetOpenOrders(int order_type) {
+    int count = 0;
+    for (int i = PositionsTotal() - 1; i >= 0; i--) {
+        ulong ticket = PositionGetTicket(i);
+        if (PositionSelectByTicket(ticket)) {
+            if (PositionGetString(POSITION_SYMBOL) == _Symbol &&
+                PositionGetInteger(POSITION_TYPE) == order_type) {
+                count++;
+            }
+        }
+    }
+    PrintFormat("📊 Debug: Số lệnh hiện tại loại %d: %d", order_type, count);
+    return count;
+}
+
+// ========================== 🟢 MỞ LỆNH BUY ==========================
+void OpenBuy() {
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double sl = ask - StopLoss * _Point;
+    double tp = ask + TakeProfit * _Point;
+
+    PrintFormat("📊 Debug: Giá Ask: %.5f | SL: %.5f | TP: %.5f", ask, sl, tp);
+
+    if (GetOpenOrders(POSITION_TYPE_BUY) < MaxOrders) {
+        Print("📈 Mở lệnh Buy");
+        MqlTradeRequest request;
+        MqlTradeResult result;
+        ZeroMemory(request);
+
+        request.action = TRADE_ACTION_DEAL;
+        request.type = ORDER_TYPE_BUY;
+        request.symbol = _Symbol;
+        request.volume = LotSize;
+        request.price = ask;
+        request.sl = sl;
+        request.tp = tp;
+        request.magic = 123456;
+        request.comment = "LSTM Buy";
+        request.type_filling = ORDER_FILLING_FOK;
+        request.deviation = 10;
+
+        if (!OrderSend(request, result)) {
+            PrintFormat("❌ Lỗi mở lệnh Buy: %d - %s", result.retcode, result.comment);
+        } else {
+            PrintFormat("✅ Lệnh Buy mở thành công! Ticket: %llu", result.order);
+        }
+    }
+}
+
+// ========================== 🟢 MỞ LỆNH SELL ==========================
+void OpenSell() {
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double sl = bid + StopLoss * _Point;
+    double tp = bid - TakeProfit * _Point;
+
+    PrintFormat("📊 Debug: Giá Bid: %.5f | SL: %.5f | TP: %.5f", bid, sl, tp);
+
+    if (GetOpenOrders(POSITION_TYPE_SELL) < MaxOrders) {
+        Print("📉 Mở lệnh Sell");
+        MqlTradeRequest request;
+        MqlTradeResult result;
+        ZeroMemory(request);
+
+        request.action = TRADE_ACTION_DEAL;
+        request.type = ORDER_TYPE_SELL;
+        request.symbol = _Symbol;
+        request.volume = LotSize;
+        request.price = bid;
+        request.sl = sl;
+        request.tp = tp;
+        request.magic = 123456;
+        request.comment = "LSTM Sell";
+        request.type_filling = ORDER_FILLING_FOK;
+        request.deviation = 10;
+
+        if (!OrderSend(request, result)) {
+            PrintFormat("❌ Lỗi mở lệnh Sell: %d - %s", result.retcode, result.comment);
+        } else {
+            PrintFormat("✅ Lệnh Sell mở thành công! Ticket: %llu", result.order);
+        }
+    }
+}
+
+// ========================== 🟢 QUẢN LÝ LỆNH ==========================
+void ManageOrders() {
+    MqlTradeRequest request;
+    MqlTradeResult result;
+
+    for (int i = PositionsTotal() - 1; i >= 0; i--) {
+        ulong ticket = PositionGetTicket(i);
+        if (PositionSelectByTicket(ticket)) {
+            double tp = PositionGetDouble(POSITION_TP);
+            double price = PositionGetDouble(POSITION_PRICE_CURRENT);
+            ENUM_POSITION_TYPE position_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+            PrintFormat("📊 Debug: Kiểm tra lệnh #%llu | Giá hiện tại: %.5f | TP: %.5f", ticket, price, tp);
+
+            if ((position_type == POSITION_TYPE_BUY && price >= tp) ||
+                (position_type == POSITION_TYPE_SELL && price <= tp)) {
+
+                PrintFormat("✅ Đóng lệnh #%llu - Giá hiện tại: %.5f", ticket, price);
+
+                ZeroMemory(request);
+                request.action = TRADE_ACTION_CLOSE_BY;
+                request.position = ticket;
+
+                if (!OrderSend(request, result)) {
+                    PrintFormat("❌ Lỗi đóng lệnh #%llu: %d - %s", ticket, result.retcode, result.comment);
+                } else {
+                    PrintFormat("✅ Lệnh #%llu đã được đóng thành công!", ticket);
+                }
+            }
+        }
+    }
+}
+
+// ========================== 🟢 XỬ LÝ TICK ==========================
+void OnTick() {
+    double prediction = PredictPrice();
+    if (prediction == 0.0) {
+        Print("⚠️ Không có giá dự đoán, bỏ qua OnTick.");
+        return;
+    }
+
+    double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    PrintFormat("📊 Debug: Giá hiện tại: %.5f | Giá dự đoán: %.5f", current_price, prediction);
+
+    ManageOrders();
+
+    if (prediction > current_price) {
+        Print("📈 Điều kiện Buy thỏa mãn! Mở lệnh Buy.");
+        OpenBuy();
+    } else {
+        Print("📉 Điều kiện Sell thỏa mãn! Mở lệnh Sell.");
+        OpenSell();
+    }
+}
